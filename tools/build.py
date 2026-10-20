@@ -204,7 +204,12 @@ def build_env(work, prefix, source, objects):
     compiler = prefix + 'gcc'
     cache = shutil.which('ccache')
     cc = f'{cache} {compiler}' if cache else compiler
+    # This GCC-only/no-BTF profile does not use Rust, bindgen or pahole.
+    # Kconfig probes them even when disabled, so host PATH must not select
+    # optional tool versions. Override make variables (environment is weaker
+    # than Linux's Makefile defaults). Future Rust/BTF profiles must pin tools.
     return env, ['ARCH=arm64', f'CROSS_COMPILE={prefix}', f'CC={cc}',
+                 'RUSTC=false', 'BINDGEN=false', 'PAHOLE=false',
                  f'KCFLAGS={maps}', f'KAFLAGS={maps}', 'DTC_FLAGS=-@', 'LOCALVERSION=']
 
 

@@ -38,8 +38,11 @@ CCACHE_DISABLE=1 ./kernel-lab build --clean --jobs 6
 
 Nix supplies pinned sources and tools; it does **not** rebuild the kernel in a
 fresh derivation for each edit. The first invocation may fetch/build substantial
-dependencies. No NixOS host configuration, privileged operation, daemon sandbox
-exception, global package installation or phone connection is needed.
+dependencies. This GCC-only/no-BTF profile explicitly disables optional Rust,
+bindgen and pahole probes, so tools installed on the caller's host do not change
+the solved configuration. Future Rust/BTF profiles must pin those tools instead.
+No NixOS host configuration, privileged operation, daemon sandbox exception,
+global package installation or phone connection is needed.
 
 Persistent state lives in `~/.cache/ace6-kernel-lab`, separate from the checkout.
 Override with `build --workspace /a/whitespace-free/user-owned/path`. The checkout

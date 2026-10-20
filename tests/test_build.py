@@ -11,6 +11,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from unittest import mock
 
 
 DRIVER = Path(__file__).resolve().parents[1] / "tools/build.py"
@@ -88,6 +89,45 @@ class CompilerPathTests(unittest.TestCase):
                     subprocess.run(command, cwd=objects, env=env, check=True, capture_output=True)
                     cached = (objects / 'probe.o').read_bytes()
                     self.assertEqual(cached, uncached, 'ccache must not change embedded __FILE__ paths')
+
+    def test_host_optional_tools_cannot_change_real_kconfig(self):
+        source, prefix = os.environ.get('KERNEL_SOURCE'), os.environ.get('CROSS_COMPILE')
+        if not source or not prefix:
+            self.skipTest('requires pinned Linux source and cross compiler from nix develop')
+        build_env = runpy.run_path(str(DRIVER))['build_env']
+        with tempfile.TemporaryDirectory(prefix='kernel-kconfig-test-') as directory:
+            work = Path(directory)
+            tools = work / 'host-tools'
+            tools.mkdir()
+            rustc = tools / 'rustc'
+            rustc.write_text('#!/bin/sh\n'
+                             'case "$1" in\n'
+                             '  --version|-vV) printf "rustc 1.99.0\\nLLVM version: 23.1.1\\n";;\n'
+                             '  *) exit 1;;\n'
+                             'esac\n')
+            rustc.chmod(0o755)
+            pahole = tools / 'pahole'
+            pahole.write_text('#!/bin/sh\nprintf "v1.35\\n"\n')
+            pahole.chmod(0o755)
+            configs = []
+            for poisoned in (False, True):
+                objects = work / ('host' if poisoned else 'baseline')
+                objects.mkdir()
+                shutil.copyfile(DRIVER.parents[1] / 'config/ace6.config', objects / '.config')
+                path = os.environ['PATH']
+                if poisoned:
+                    path = str(tools) + os.pathsep + path
+                with mock.patch.dict(os.environ, {'PATH': path}):
+                    env, variables = build_env(work, prefix, Path(source), objects)
+                result = subprocess.run(['make', '-C', source, f'O={objects}',
+                                         *variables, 'olddefconfig'], env=env,
+                                        capture_output=True, text=True)
+                self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+                configs.append((objects / '.config').read_text())
+            self.assertEqual(configs[0], configs[1],
+                             'host optional tools must not change the pinned solved config')
+            for symbol in ('RUSTC_VERSION', 'RUSTC_LLVM_VERSION', 'PAHOLE_VERSION'):
+                self.assertIn(f'CONFIG_{symbol}=0\n', configs[1])
 
 
 class BuildTests(unittest.TestCase):
