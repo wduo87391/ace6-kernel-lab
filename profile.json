@@ -1,0 +1,16 @@
+{
+  "schema": 1,
+  "name": "ace6-usb-log",
+  "config": "config/ace6.config",
+  "dtb": "qcom/ace6-ktm-ti-usb-diag-fb.dtb",
+  "dts": [
+    "dts/ace6-ktm-ti.dts",
+    "dts/ace6-ktm-ti-usb-diag.dts",
+    "dts/ace6-ktm-ti-usb-diag-fb.dts"
+  ],
+  "patches": [
+    "patches/0005-efi-stub-entry-markers-candidate.patch",
+    "patches/0006-efi-stub-post-ebs-markers-candidate.patch",
+    "patches/0009-usb-serial-console-1m.patch"
+  ]
+}

@@ -1,0 +1,233 @@
+--- /dev/null
++++ b/drivers/firmware/efi/libstub/ace6-post-ebs-mark.h
+@@ -0,0 +1,184 @@
++/* SPDX-License-Identifier: GPL-2.0-only */
++#ifndef ACE6_POST_EBS_MARK_H
++#define ACE6_POST_EBS_MARK_H
++
++#include "ace6-entry-mark.h"
++
++/* Post-ExitBootServices feedback for the ace6 RAM diagnostic, stacked on the
++ * entry markers of ace6-entry-mark.h.
++ *
++ * ExitBootServices() invalidates every boot service, so nothing in this file
++ * may call GOP, Stall, allocate or print after that point. The only pre-EBS
++ * work is: capture plain numbers, draw one calibration cell through GOP BLT,
++ * then draw the neighbouring cell with the very stores the checkpoints use
++ * later. Comparing those two cells tells the observer whether direct stores
++ * reach the scan-out buffer, so a missing later checkpoint is not silently
++ * misread as a hang.
++ *
++ * Row G (6) below the parent A..D and entry E/F rows, BGRA bytes:
++ *   G0 magenta, via GOP BLT     - firmware drawing path still works at E5
++ *   G1 magenta, via direct store- direct stores hit the same buffer
++ *   G2 green, EBS returned ok   - efi_exit_boot_services() returned EFI_SUCCESS
++ *   G3 green, SVAM returned     - set_virtual_address_map() returned (any status)
++ *
++ * No pointer captured before ExitBootServices() is dereferenced afterwards:
++ * only the frame buffer base, stride, cell size and row origin, all numbers.
++ */
++#define ACE6_POST_EBS_ROW		6u
++#define ACE6_POST_EBS_MAGENTA		0x00ff00ffu
++#define ACE6_POST_EBS_GREEN		0x0000ff00u
++#define ACE6_POST_EBS_STAGE_FIRST	6u
++#define ACE6_POST_EBS_STAGE_LAST	7u
++#define ACE6_POST_EBS_DELAY_SECONDS	3u
++/* UEFI EFI_GRAPHICS_PIXEL_FORMAT: 0 = RGBA, 1 = BGRA, 2 = bit mask,
++ * 3 = BLT-only. Only linear 32-bit BGRA can be written by plain stores;
++ * BLT-only has no frame buffer at all, and 0/2 would need byte reordering.
++ */
++#define ACE6_POST_EBS_BGRA		1u
++/* Reject an absent or implausible counter frequency instead of spinning. */
++#define ACE6_POST_EBS_FREQ_MIN		1000ull
++#define ACE6_POST_EBS_FREQ_MAX		1000000000ull
++/* Hard bound on counter reads: CL1/EL2 may trap or the counter may be dead,
++ * so the wait must end even when CNTPCT_EL0 never advances.
++ */
++#define ACE6_POST_EBS_SPIN_MAX		1000000000ull
++
++typedef struct {
++	unsigned long fb_base;
++	unsigned long pps;
++	unsigned long square;
++	unsigned long stride;
++	unsigned long x0;
++	unsigned long row_y;
++	unsigned int ready;
++} ace6_post_ebs_ctx;
++
++#if !defined(__aarch64__)
++/* Host tests only: x86-64 has no CNTPCT_EL0/CNTFRQ_EL0. */
++void ace6_post_ebs_host_delay(unsigned int seconds);
++#endif
++
++/* Linear VPIO fill of one cell. Never call before ctx->ready is set. */
++static __attribute__((__noinline__)) void
++ace6_post_ebs_store(ace6_post_ebs_ctx *ctx, unsigned int column, u32 value)
++{
++	volatile u32 *fb = (volatile u32 *)ctx->fb_base;
++	unsigned long dx = ctx->x0 + (unsigned long)column * ctx->stride;
++	unsigned long row, col;
++
++	for (row = 0; row < ctx->square; row++) {
++		volatile u32 *line = fb + (ctx->row_y + row) * ctx->pps + dx;
++
++		for (col = 0; col < ctx->square; col++)
++			line[col] = value;
++	}
++}
++
++static __attribute__((__noinline__)) void
++ace6_post_ebs_delay(unsigned int seconds)
++{
++#if defined(__aarch64__)
++	u64 freq, start, now, ticks;
++	unsigned long spins;
++
++	__asm__ volatile("mrs %0, cntfrq_el0" : "=r"(freq));
++	if (freq < ACE6_POST_EBS_FREQ_MIN || freq > ACE6_POST_EBS_FREQ_MAX)
++		return;
++	ticks = freq * seconds;
++	__asm__ volatile("isb" ::: "memory");
++	__asm__ volatile("mrs %0, cntpct_el0" : "=r"(start));
++	for (spins = 0; spins < ACE6_POST_EBS_SPIN_MAX; spins++) {
++		__asm__ volatile("isb" ::: "memory");
++		__asm__ volatile("mrs %0, cntpct_el0" : "=r"(now));
++		if (now - start >= ticks)
++			return;
++	}
++#else
++	ace6_post_ebs_host_delay(seconds);
++#endif
++}
++
++/* Checkpoint after boot services are gone: stores and a counter wait only. */
++static __attribute__((__noinline__)) void
++ace6_post_ebs_mark(ace6_post_ebs_ctx *ctx, unsigned int stage)
++{
++	if (!ctx || !ctx->ready)
++		return;
++	if (stage < ACE6_POST_EBS_STAGE_FIRST || stage > ACE6_POST_EBS_STAGE_LAST)
++		return;
++	ace6_post_ebs_store(ctx, stage - 4u, ACE6_POST_EBS_GREEN);
++	ace6_post_ebs_delay(ACE6_POST_EBS_DELAY_SECONDS);
++}
++
++/* Pre-EBS capture plus the two-cell calibration. Boot services still live. */
++static __attribute__((__noinline__)) void
++ace6_post_ebs_prepare(ace6_post_ebs_ctx *ctx)
++{
++	efi_guid_t guid = EFI_GRAPHICS_OUTPUT_PROTOCOL_GUID;
++	efi_graphics_output_protocol_t *gop = NULL;
++	efi_graphics_output_mode_info_t *info;
++	ace6_efi_blt_pixel magenta = { 255, 0, 255, 0 };
++	ace6_efi_blt_fn blt;
++	efi_status_t status;
++	unsigned long width, height, sq, stride, x0, y, bottom, pixels, bytes;
++
++	if (!ctx)
++		return;
++	ctx->ready = 0;
++	if (!efi_system_table || !efi_system_table->boottime ||
++	    !efi_system_table->boottime->locate_protocol)
++		return;
++
++	status = efi_bs_call(locate_protocol, &guid, NULL, (void **)&gop);
++	if (status != EFI_SUCCESS || !gop || !gop->blt || !gop->mode ||
++	    !gop->mode->info)
++		return;
++	info = gop->mode->info;
++	/* Direct stores only decode the linear 32-bit BGRA layout; every other
++	 * format is refused rather than guessed, so a missing G row can never
++	 * be blamed on the wrong pixel order or on a BLT-only mode.
++	 */
++	if (info->pixel_format != ACE6_POST_EBS_BGRA)
++		return;
++	width = info->horizontal_resolution;
++	height = info->vertical_resolution;
++	/* Bound before arithmetic: no overflow in unsigned long anywhere. */
++	if (!gop->mode->frame_buffer_base || !width || !height ||
++	    width > 16384 || height > 16384)
++		return;
++	if (!info->pixels_per_scan_line || info->pixels_per_scan_line < width ||
++	    info->pixels_per_scan_line > 16384)
++		return;
++	sq = width / 12;
++	if (sq < 16)
++		return;
++	/* Same grid as the parent A..D rows and the E/F entry rows. */
++	stride = sq + sq / 4;
++	x0 = sq / 2;
++	y = height / 3 + ACE6_POST_EBS_ROW * (sq + sq / 3);
++	bottom = y + sq;
++	if (x0 + 3 * stride + sq > width || bottom > height)
++		return;
++	pixels = bottom * info->pixels_per_scan_line;
++	bytes = pixels * 4;
++	if (bytes / 4 != pixels || gop->mode->frame_buffer_size < bytes)
++		return;
++
++	ctx->fb_base = gop->mode->frame_buffer_base;
++	ctx->pps = info->pixels_per_scan_line;
++	ctx->square = sq;
++	ctx->stride = stride;
++	ctx->x0 = x0;
++	ctx->row_y = y;
++	ctx->ready = 1;
++
++	/* Calibration: G0 through the firmware BLT, G1 through the direct
++	 * stores used after ExitBootServices. A failed BLT is deliberately not
++	 * propagated: the two paths must stay independently observable.
++	 */
++	blt = (ace6_efi_blt_fn)gop->blt;
++	(void)blt(gop, &magenta, 0, 0, 0, x0, y, sq, sq, 0);
++	ace6_post_ebs_store(ctx, 1, ACE6_POST_EBS_MAGENTA);
++}
++
++#endif /* ACE6_POST_EBS_MARK_H */
+--- a/drivers/firmware/efi/libstub/fdt.c
++++ b/drivers/firmware/efi/libstub/fdt.c
+@@ -13,6 +13,7 @@
+ 
+ #include "efistub.h"
+ #include "ace6-entry-mark.h"
++#include "ace6-post-ebs-mark.h"
+ 
+ #define EFI_DT_ADDR_CELLS_DEFAULT 2
+ #define EFI_DT_SIZE_CELLS_DEFAULT 2
+@@ -232,6 +233,8 @@ efi_status_t allocate_new_fdt_and_exit_boot(void *handle,
+ 	struct exit_boot_struct priv;
+ 	unsigned long fdt_addr = 0;
+ 	unsigned long fdt_size = 0;
++	/* Numbers captured before ExitBootServices(), no firmware pointers. */
++	ace6_post_ebs_ctx post_ebs_ctx;
+ 
+ 	if (!efi_novamap) {
+ 		status = efi_alloc_virtmap(&priv.runtime_map, &desc_size,
+@@ -291,12 +294,17 @@ efi_status_t allocate_new_fdt_and_exit_boot(void *handle,
+ 	priv.new_fdt_addr = (void *)*new_fdt_addr;
+ 
+ 	ace6_efi_entry_mark(5);
++	/* Last legal moment for GOP: capture numbers and calibrate the channel. */
++	ace6_post_ebs_prepare(&post_ebs_ctx);
+ 
+ 	status = efi_exit_boot_services(handle, &priv, exit_boot_func);
+ 
+ 	if (status == EFI_SUCCESS) {
+ 		efi_set_virtual_address_map_t *svam;
+ 
++		/* Only stores and a counter wait from here on. */
++		ace6_post_ebs_mark(&post_ebs_ctx, 6);
++
+ 		if (efi_novamap)
+ 			return EFI_SUCCESS;
+ 
+@@ -305,6 +313,8 @@ efi_status_t allocate_new_fdt_and_exit_boot(void *handle,
+ 		status = svam(priv.runtime_entry_count * desc_size, desc_size,
+ 			      desc_ver, priv.runtime_map);
+ 
++		ace6_post_ebs_mark(&post_ebs_ctx, 7);
++
+ 		/*
+ 		 * We are beyond the point of no return here, so if the call to
+ 		 * SetVirtualAddressMap() failed, we need to signal that to the

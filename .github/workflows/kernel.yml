@@ -1,0 +1,99 @@
+name: Kernel lab
+run-name: Kernel lab ${{ inputs.request_id || github.sha }}
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: Build mode (clean bypasses object and compiler caches)
+        required: true
+        default: incremental
+        type: choice
+        options: [incremental, clean]
+      request_id:
+        description: Correlation ID (set by kernel-lab ci submit)
+        required: false
+        type: string
+      expected_sha:
+        description: Ref must still resolve to this public commit
+        required: false
+        type: string
+permissions:
+  contents: read
+concurrency:
+  group: kernel-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - name: Check requested commit
+        env:
+          EXPECTED_SHA: ${{ inputs.expected_sha }}
+        run: |
+          if [ -n "$EXPECTED_SHA" ] && [ "$EXPECTED_SHA" != "$GITHUB_SHA" ]; then
+            echo 'Ref changed after dispatch; refusing a different commit.'
+            exit 1
+          fi
+      - uses: cachix/install-nix-action@448cde739abec1eaf0646249e3d25bb8d9bc7702 # v31
+        with:
+          extra_nix_config: |
+            experimental-features = nix-command flakes
+      - name: Public source gate and regression tests
+        run: |
+          python3 tools/public_check.py
+          ./kernel-lab test
+      - name: Restore development cache
+        if: inputs.mode != 'clean'
+        id: cache
+        uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        with:
+          path: |
+            ~/.cache/ace6-kernel-lab/.kernel-lab-owner
+            ~/.cache/ace6-kernel-lab/lanes
+            ~/.cache/ace6-kernel-lab/ccache
+          key: kbuild-v1-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('flake.lock', 'config/ace6.config', 'flake.nix') }}-${{ github.sha }}-${{ github.run_id }}
+          restore-keys: |
+            kbuild-v1-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('flake.lock', 'config/ace6.config', 'flake.nix') }}-
+      - name: Compile and audit paired artifacts
+        env:
+          MODE: ${{ inputs.mode || 'incremental' }}
+        run: |
+          if [ "$MODE" = clean ]; then
+            export CCACHE_DISABLE=1
+            ./kernel-lab build --clean --jobs 4
+          else
+            ./kernel-lab build --jobs 4
+          fi
+          python3 tools/public_check.py --artifacts "$HOME/.cache/ace6-kernel-lab/latest"
+          mkdir "$RUNNER_TEMP/ace6-artifacts"
+          for name in Image ace6-ktm-ti-usb-diag-fb.dtb config.solved manifest.json SHA256SUMS; do
+            cp "$HOME/.cache/ace6-kernel-lab/latest/$name" "$RUNNER_TEMP/ace6-artifacts/$name"
+          done
+          (cd "$RUNNER_TEMP/ace6-artifacts"; sha256sum -c SHA256SUMS)
+      - name: Save trusted-branch development cache
+        if: success() && github.event_name != 'pull_request' && github.ref == 'refs/heads/main' && inputs.mode != 'clean'
+        uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        with:
+          path: |
+            ~/.cache/ace6-kernel-lab/.kernel-lab-owner
+            ~/.cache/ace6-kernel-lab/lanes
+            ~/.cache/ace6-kernel-lab/ccache
+          key: kbuild-v1-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('flake.lock', 'config/ace6.config', 'flake.nix') }}-${{ github.sha }}-${{ github.run_id }}
+      - name: Upload only the audited pair
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: ace6-usb-log-${{ github.sha }}
+          path: |
+            ${{ runner.temp }}/ace6-artifacts/Image
+            ${{ runner.temp }}/ace6-artifacts/ace6-ktm-ti-usb-diag-fb.dtb
+            ${{ runner.temp }}/ace6-artifacts/config.solved
+            ${{ runner.temp }}/ace6-artifacts/manifest.json
+            ${{ runner.temp }}/ace6-artifacts/SHA256SUMS
+          if-no-files-found: error
+          retention-days: 7

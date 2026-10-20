@@ -1,0 +1,162 @@
+--- a/drivers/firmware/efi/libstub/efi-stub-entry.c
++++ b/drivers/firmware/efi/libstub/efi-stub-entry.c
+@@ -6,6 +6,7 @@
+ #include <asm/efi.h>
+ 
+ #include "efistub.h"
++#include "ace6-entry-mark.h"
+ 
+ static unsigned long kernel_image_offset;
+ 
+@@ -51,6 +52,8 @@
+ 	if (efi_system_table->hdr.signature != EFI_SYSTEM_TABLE_SIGNATURE)
+ 		return EFI_INVALID_PARAMETER;
+ 
++	ace6_efi_entry_mark(1);
++
+ 	/*
+ 	 * Get a handle to the loaded image protocol.  This is used to get
+ 	 * information about the running image, such as size and the command
+@@ -67,6 +70,8 @@
+ 	if (status != EFI_SUCCESS)
+ 		return status;
+ 
++	ace6_efi_entry_mark(2);
++
+ 	efi_info("Booting Linux Kernel...\n");
+ 
+ 	status = handle_kernel_image(&image_addr, &image_size,
+@@ -80,6 +85,8 @@
+ 
+ 	kernel_image_offset = image_addr - (unsigned long)image->image_base;
+ 
++	ace6_efi_entry_mark(3);
++
+ 	status = efi_stub_common(handle, image, image_addr, cmdline_ptr);
+ 
+ 	efi_free(image_size, image_addr);
+--- a/drivers/firmware/efi/libstub/efi-stub.c
++++ b/drivers/firmware/efi/libstub/efi-stub.c
+@@ -14,6 +14,7 @@
+ #include <asm/efi.h>
+ 
+ #include "efistub.h"
++#include "ace6-entry-mark.h"
+ 
+ /*
+  * This is the base address at which to start allocating virtual memory ranges
+@@ -179,6 +180,8 @@
+ 			 EFI_RT_SUPPORTED_SET_VIRTUAL_ADDRESS_MAP);
+ 
+ 	install_memreserve_table();
++
++	ace6_efi_entry_mark(4);
+ 
+ 	status = efi_boot_kernel(handle, image, image_addr, cmdline_ptr);
+ 
+--- a/drivers/firmware/efi/libstub/fdt.c
++++ b/drivers/firmware/efi/libstub/fdt.c
+@@ -12,6 +12,7 @@
+ #include <asm/efi.h>
+ 
+ #include "efistub.h"
++#include "ace6-entry-mark.h"
+ 
+ #define EFI_DT_ADDR_CELLS_DEFAULT 2
+ #define EFI_DT_SIZE_CELLS_DEFAULT 2
+@@ -289,6 +290,8 @@
+ 
+ 	priv.new_fdt_addr = (void *)*new_fdt_addr;
+ 
++	ace6_efi_entry_mark(5);
++
+ 	status = efi_exit_boot_services(handle, &priv, exit_boot_func);
+ 
+ 	if (status == EFI_SUCCESS) {
+--- /dev/null
++++ b/drivers/firmware/efi/libstub/ace6-entry-mark.h
+@@ -0,0 +1,84 @@
++/* SPDX-License-Identifier: GPL-2.0-only */
++#ifndef ACE6_EFI_ENTRY_MARK_H
++#define ACE6_EFI_ENTRY_MARK_H
++
++/* Native arm64 diagnostic only: GOP VideoFill, never framebuffer access.
++ * Keep every object automatic: entry code runs on both sides of relocation.
++ * No mode queries/changes, allocations, variables, files or persistent state.
++ */
++typedef struct {
++	u8 blue, green, red, reserved;
++} ace6_efi_blt_pixel;
++
++/* efistub.h deliberately leaves GOP->blt as void *. UEFI UINTN arguments
++ * are unsigned long in this native build; EfiBltVideoFill is operation 0.
++ */
++typedef efi_status_t (__efiapi *ace6_efi_blt_fn)(
++	efi_graphics_output_protocol_t *, ace6_efi_blt_pixel *, unsigned int,
++	unsigned long, unsigned long, unsigned long, unsigned long,
++	unsigned long, unsigned long, unsigned long);
++
++static __attribute__((__noinline__)) void ace6_efi_entry_mark(unsigned int stage)
++{
++	efi_guid_t guid = EFI_GRAPHICS_OUTPUT_PROTOCOL_GUID;
++	efi_graphics_output_protocol_t *gop = NULL;
++	efi_graphics_output_mode_info_t *info;
++	ace6_efi_blt_fn blt;
++	ace6_efi_blt_pixel magenta = { 255, 0, 255, 0 };
++	ace6_efi_blt_pixel dark = { 24, 24, 24, 0 };
++	ace6_efi_blt_pixel green = { 0, 255, 0, 0 };
++	efi_status_t status;
++	unsigned long width, height, sq, stride, left, last_x;
++	unsigned long row_e, row_f, bottom;
++	unsigned int col;
++
++	if (stage < 1 || stage > 5)
++		return;
++	if (!efi_system_table || !efi_system_table->boottime ||
++	    !efi_system_table->boottime->locate_protocol ||
++	    !efi_system_table->boottime->stall)
++		return;
++
++	status = efi_bs_call(locate_protocol, &guid, NULL, (void **)&gop);
++	if (status != EFI_SUCCESS || !gop || !gop->blt || !gop->mode ||
++	    !gop->mode->info)
++		return;
++	info = gop->mode->info;
++	width = info->horizontal_resolution;
++	height = info->vertical_resolution;
++	/* Bound BEFORE arithmetic: enough for known panels, no overflow even
++	 * on 32-bit unsigned long. Reject rather than rescale the parent grid.
++	 */
++	if (!width || !height || width > 16384 || height > 16384)
++		return;
++	sq = width / 12;
++	if (sq < 16)
++		return;
++	/* Preserve parent rows A..D; append E (4) and F (5). */
++	stride = sq + sq / 4;
++	left = sq / 2;
++	last_x = left + 7 * stride;
++	row_e = height / 3 + 4 * (sq + sq / 3);
++	row_f = height / 3 + 5 * (sq + sq / 3);
++	bottom = row_f + sq;
++	if (last_x + sq > width || bottom > height)
++		return;
++
++	blt = (ace6_efi_blt_fn)gop->blt;
++	/* Invalidate any previous completion BEFORE changing the stage row. */
++	if (blt(gop, &dark, 0, 0, 0, last_x, row_f, sq, sq, 0) != EFI_SUCCESS)
++		return;
++	for (col = 0; col < 8; col++) {
++		ace6_efi_blt_pixel *pixel = col < stage ? &magenta : &dark;
++
++		if (blt(gop, pixel, 0, 0, 0, left + col * stride, row_e,
++			sq, sq, 0) != EFI_SUCCESS)
++			return;
++	}
++	/* Completion is meaningful only when ALL preceding BLTs succeeded. */
++	if (blt(gop, &green, 0, 0, 0, last_x, row_f, sq, sq, 0) != EFI_SUCCESS)
++		return;
++	efi_bs_call(stall, 3000000);
++}
++
++#endif /* ACE6_EFI_ENTRY_MARK_H */

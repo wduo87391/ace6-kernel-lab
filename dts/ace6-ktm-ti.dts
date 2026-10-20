@@ -1,0 +1,32 @@
+// SPDX-License-Identifier: BSD-3-Clause
+/* OnePlus Ace 6 board-level USB candidate on the pinned SM8750 MTP base.
+ * Register addresses and tuning are board data, not device-unit identifiers.
+ * Incomplete board support; no electrical or device-validation claim. */
+#include "sm8750-mtp.dts"
+
+/ {
+	model = "OnePlus Ace 6 (ktm-g_ti, candidate)";
+	compatible = "qcom,sm8750-mtp", "qcom,sm8750";
+};
+
+&usb {
+
+	maximum-speed = "high-speed";
+
+	dr_mode = "peripheral";
+
+	qcom,select-utmi-as-pipe-clk;
+};
+
+&wcd_usbss {
+	/delete-property/ reset-gpios;
+};
+
+&pmih0108_eusb2_repeater {
+	qcom,tune-usb2-amplitude = /bits/ 8 <15>;
+	qcom,tune-res-fsdif = /bits/ 8 <4>;
+	qcom,tune-usb2-disc-thres = /bits/ 8 <7>;
+	qcom,tune-usb2-preem = /bits/ 8 <7>;
+
+	qcom,squelch-detector-bp = <(-2000)>;
+};

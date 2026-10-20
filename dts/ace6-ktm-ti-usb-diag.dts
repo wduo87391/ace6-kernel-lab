@@ -1,0 +1,110 @@
+// SPDX-License-Identifier: BSD-3-Clause
+/* USB-only partial graph. RAM/reservations are inherited from upstream,
+ * not a validated phone RAM map. Refgen, strong pull, slew and CC remain gaps. */
+#include "ace6-ktm-ti.dts"
+
+/ {
+	model = "OnePlus Ace 6 (ktm-g_ti, RAM USB compile candidate)";
+
+	/delete-node/ audio-codec;
+	/delete-node/ sound;
+	/delete-node/ gpio-keys;
+	/delete-node/ wcn7850-pmu;
+	/delete-node/ pmic-glink;
+
+	connector {
+		compatible = "usb-c-connector";
+		ports {
+			#address-cells = <1>;
+			#size-cells = <0>;
+
+			port@0 {
+				reg = <0>;
+				diag_connector_hs: endpoint {
+					remote-endpoint = <&usb_dwc3_hs>;
+				};
+			};
+
+			port@2 {
+				reg = <2>;
+				diag_connector_mux: endpoint {
+					remote-endpoint = <&wcd_usbss_sbu_mux>;
+				};
+			};
+		};
+	};
+
+	chosen {
+		/delete-property/ stdout-path;
+	};
+};
+
+&usb {
+	/delete-property/ usb-role-switch;
+	phys = <&usb_hsphy>;
+	phy-names = "usb2-phy";
+	ports {
+		/delete-node/ port@1;
+	};
+};
+
+&usb_dwc3_hs {
+	remote-endpoint = <&diag_connector_hs>;
+};
+
+&wcd_usbss {
+	ports {
+		/delete-node/ port@1;
+	};
+};
+
+&wcd_usbss_sbu_mux {
+	remote-endpoint = <&diag_connector_mux>;
+};
+
+&usb_dp_qmpphy_out {
+	/delete-property/ remote-endpoint;
+};
+
+&usb_dp_qmpphy {
+	status = "disabled";
+	ports {
+		/delete-node/ port@1;
+	};
+};
+&pcie0 { status = "disabled"; };
+&pcieport0 { /delete-node/ wifi@0; };
+
+&pcie0_phy { status = "disabled"; };
+&ufs_mem_hc { status = "disabled"; };
+&ufs_mem_phy { status = "disabled"; };
+&sdhc_2 { status = "disabled"; };
+&uart7 { status = "disabled"; };
+&uart14 {
+	status = "disabled";
+	/delete-node/ bluetooth;
+};
+
+&gpi_dma1 { status = "okay"; };
+
+&qupv3_2 { status = "disabled"; };
+&remoteproc_adsp { status = "disabled"; };
+&remoteproc_cdsp { status = "disabled"; };
+&remoteproc_mpss { status = "disabled"; };
+&iris { status = "disabled"; };
+&mdss { status = "disabled"; };
+&mdss_dp0 { status = "disabled"; };
+&mdss_dsi0 { status = "disabled"; };
+&mdss_dsi0_phy { status = "disabled"; };
+&pm8550_flash { status = "disabled"; };
+&pm8550_pwm { status = "disabled"; };
+&pon_pwrkey { status = "disabled"; };
+&pon_resin { status = "disabled"; };
+&swr0 { status = "disabled"; };
+&swr1 { status = "disabled"; };
+&swr2 { status = "disabled"; };
+&lpass_vamacro { status = "disabled"; };
+&lpass_rxmacro { status = "disabled"; };
+&lpass_txmacro { status = "disabled"; };
+&lpass_wsamacro { status = "disabled"; };
+&lpass_tlmm { status = "disabled"; };

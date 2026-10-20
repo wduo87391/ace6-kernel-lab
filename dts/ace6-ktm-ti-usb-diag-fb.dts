@@ -1,0 +1,36 @@
+// SPDX-License-Identifier: BSD-3-Clause
+/* Firmware-owned framebuffer candidate (1272x2800 BGRA).
+ * This region and geometry must match the boot firmware. Not a deployable DT. */
+#include "ace6-ktm-ti-usb-diag.dts"
+
+/ {
+	reserved-memory {
+		#address-cells = <2>;
+		#size-cells = <2>;
+		ranges;
+
+		display_reserved: display-reserved@fc800000 {
+			reg = <0x0 0xfc800000 0x0 0x2b00000>;
+			no-map;
+		};
+	};
+
+	chosen {
+		#address-cells = <2>;
+		#size-cells = <2>;
+		ranges;
+
+		framebuffer0: framebuffer@fc800000 {
+			compatible = "simple-framebuffer";
+			reg = <0x0 0xfc800000 0x0 0xd96200>;
+			width = <1272>;
+			height = <2800>;
+			stride = <5088>;
+			format = "a8r8g8b8";
+			status = "okay";
+		};
+	};
+};
+
+/* Preserve firmware scan-out; do not reinitialise DISPCC. */
+&dispcc { status = "disabled"; };

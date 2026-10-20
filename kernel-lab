@@ -1,0 +1,13 @@
+#!/usr/bin/env bash
+# SPDX-License-Identifier: MIT
+set -euo pipefail
+cd -- "$(dirname -- "$(readlink -f -- "$0")")"
+if [[ "${1:-}" == ci ]]; then
+  shift
+  exec python3 -B tools/ci.py "$@"
+fi
+if [[ "${1:-}" == test ]]; then
+  exec nix develop --no-write-lock-file path:. --command \
+    python3 -B -m unittest discover -s tests -v
+fi
+exec nix develop --no-write-lock-file path:. --command python3 -B tools/build.py "$@"

@@ -1,0 +1,9 @@
+Subject: [PATCH] usb: serial console: use a 1 MiB diagnostic FIFO
+
+Development instrumentation only; this does not guarantee complete logs.
+
+--- a/drivers/usb/gadget/function/u_serial.c
++++ b/drivers/usb/gadget/function/u_serial.c
+@@ -85,1 +85,1 @@
+-#define GS_CONSOLE_BUF_SIZE	8192
++#define GS_CONSOLE_BUF_SIZE 1048576
