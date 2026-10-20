@@ -56,9 +56,25 @@ class PublicCheckTests(unittest.TestCase):
             '--artifacts', str(self.artifacts)], capture_output=True, text=True)
         self.assertEqual(result.returncode == 0, ok, result.stdout + result.stderr)
         self.assertNotIn(str(self.base), result.stdout + result.stderr)
+        return result
 
     def test_clean_public_fixture_accepted(self):
         self.check(True)
+
+    def test_standard_hex_alphabet_is_not_a_device_identifier(self):
+        image = self.artifacts / 'Image'
+        image.write_bytes(b'public formatting alphabet: '+b'0123456789ABCDEF'+b'\0')
+        self.manifest['artifacts']['Image'] = self.sha(image.read_bytes())
+        self.save()
+        self.check(True)
+
+    def test_identifier_after_standard_alphabet_is_still_rejected(self):
+        image = self.artifacts / 'Image'
+        image.write_bytes(b'0123456789ABCDEF '+b'A1'*8+b'\0')
+        self.manifest['artifacts']['Image'] = self.sha(image.read_bytes())
+        self.save()
+        result = self.check(False)
+        self.assertIn('potential identifier in Image', result.stderr)
 
     def test_dirty_source_cannot_approve_old_committed_artifacts(self):
         with (self.repo / 'flake.nix').open('a') as f:

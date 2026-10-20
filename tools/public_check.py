@@ -31,10 +31,16 @@ PATTERNS = [
 ]
 
 
+# Linux's public printf/hex conversion alphabet is not a unit serial. Keep
+# this exact exception narrow; arbitrary hex-only serials remain suspicious.
+SAFE_LITERALS = {b'0123456789ABCDEF'}
+
+
 def scan(name, data):
     for pattern in PATTERNS:
-        if re.search(pattern, data):
-            raise ValueError('potential identifier in '+name)
+        for match in re.finditer(pattern, data):
+            if match.group() not in SAFE_LITERALS:
+                raise ValueError('potential identifier in '+name)
 
 
 def main():
