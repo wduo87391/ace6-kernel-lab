@@ -188,21 +188,24 @@ def build_env(work, prefix, source, objects):
     keep = {'PATH', 'HOME', 'TMPDIR', 'TMP', 'TEMP', 'CCACHE_DISABLE', 'SSL_CERT_FILE'}
     env = {key: value for key, value in os.environ.items()
            if key in keep or key.startswith('NIX_')}
-    maps = ' '.join(f'-{flag}={path}=.' for path in (work, source, objects)
+    # ccache rewrites absolute sources relative to the objects directory.
+    # Map that spelling too, including assembly, so bypassing the cache does
+    # not change __FILE__ strings or BUG metadata in the kernel image.
+    maps = ' '.join(f'-{flag}={path}=.' for path in (work, source, objects, '../source')
                     for flag in ('ffile-prefix-map', 'fdebug-prefix-map', 'fmacro-prefix-map'))
     env.pop('NIX_LDFLAGS', None)
     env.pop('NIX_CFLAGS_COMPILE', None)
     env.update(ARCH='arm64', CROSS_COMPILE=prefix, LC_ALL='C', KBUILD_BUILD_USER='kernel-lab',
                KBUILD_BUILD_HOST='builder', KBUILD_BUILD_VERSION='1',
                KBUILD_BUILD_TIMESTAMP='Thu Jan  1 00:00:01 UTC 1970', SOURCE_DATE_EPOCH='1',
-               KCONFIG_NOTIMESTAMP='1', LOCALVERSION='', KCFLAGS=maps, DTC_FLAGS='-@',
+               KCONFIG_NOTIMESTAMP='1', LOCALVERSION='', KCFLAGS=maps, KAFLAGS=maps, DTC_FLAGS='-@',
                CCACHE_COMPILERCHECK='content', CCACHE_BASEDIR=str(work),
                CCACHE_NOHASHDIR='true', CCACHE_DIR=str(work / 'ccache'))
     compiler = prefix + 'gcc'
     cache = shutil.which('ccache')
     cc = f'{cache} {compiler}' if cache else compiler
     return env, ['ARCH=arm64', f'CROSS_COMPILE={prefix}', f'CC={cc}',
-                 f'KCFLAGS={maps}', 'DTC_FLAGS=-@', 'LOCALVERSION=']
+                 f'KCFLAGS={maps}', f'KAFLAGS={maps}', 'DTC_FLAGS=-@', 'LOCALVERSION=']
 
 
 def publish(repo, work, objects, profile, manifest, initial):

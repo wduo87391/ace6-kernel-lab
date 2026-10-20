@@ -4,6 +4,8 @@ import hashlib
 import json
 import os
 from pathlib import Path
+import runpy
+import shlex
 import shutil
 import subprocess
 import sys
@@ -57,6 +59,35 @@ PATCH = """--- a/base.txt
 -pristine
 +patched
 """
+
+
+class CompilerPathTests(unittest.TestCase):
+    def test_ccache_and_uncached_compiler_embed_identical_file_paths(self):
+        prefix, cache = os.environ.get('CROSS_COMPILE'), shutil.which('ccache')
+        if not prefix or not cache:
+            self.skipTest('requires pinned cross compiler and ccache from nix develop')
+        build_env = runpy.run_path(str(DRIVER))['build_env']
+        with tempfile.TemporaryDirectory(prefix='kernel-path-test-') as directory:
+            work = Path(directory)
+            source, objects = work / 'lanes/test/source', work / 'lanes/test/objects'
+            source.mkdir(parents=True)
+            objects.mkdir()
+            probes = {'c': 'const char filename[] = __FILE__;\n',
+                      'S': '.section .rodata\n.asciz __FILE__\n'}
+            for suffix, text in probes.items():
+                with self.subTest(language=suffix):
+                    (source / ('probe.'+suffix)).write_text(text)
+                    env, _ = build_env(work, prefix, source, objects)
+                    flags = env['KCFLAGS' if suffix == 'c' else 'KAFLAGS']
+                    command = [cache, prefix+'gcc', *shlex.split(flags), '-c',
+                               str(source / ('probe.'+suffix)), '-o', str(objects / 'probe.o')]
+                    env['CCACHE_DISABLE'] = '1'
+                    subprocess.run(command, cwd=objects, env=env, check=True, capture_output=True)
+                    uncached = (objects / 'probe.o').read_bytes()
+                    env.pop('CCACHE_DISABLE')
+                    subprocess.run(command, cwd=objects, env=env, check=True, capture_output=True)
+                    cached = (objects / 'probe.o').read_bytes()
+                    self.assertEqual(cached, uncached, 'ccache must not change embedded __FILE__ paths')
 
 
 class BuildTests(unittest.TestCase):
